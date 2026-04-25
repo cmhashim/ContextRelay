@@ -4,16 +4,16 @@ compatibility_date = "2024-12-01"
 
 [[kv_namespaces]]
 binding = "CONTEXT_KV"
-id = "YOUR_KV_NAMESPACE_ID"
-preview_id = "YOUR_KV_PREVIEW_NAMESPACE_ID"
+id = "dbab54a86ca94d188b35f3ea9f1fe594"
+preview_id = "cddbe7c67bc44008943d7d92b15bc429"
 
 # API key validation store.
 # Create with: wrangler kv namespace create "contextrelay-api-keys"
 # Then paste the returned id and preview_id below.
 [[kv_namespaces]]
 binding = "API_KEYS_KV"
-id = "YOUR_API_KEYS_KV_NAMESPACE_ID"
-preview_id = "YOUR_API_KEYS_KV_PREVIEW_NAMESPACE_ID"
+id = "d3e081181e244518ae70ba6a2126ae1b"
+preview_id = "ebad9d40877a4926b6c941dab375024e"
 
 [vars]
 CLOUD_URL = "https://contextrelay-cloud.vercel.app"
