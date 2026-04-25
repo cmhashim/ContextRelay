@@ -1,0 +1,15 @@
+{
+  "name": "contextrelay-worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241205.0",
+    "vitest": "^2.1.8",
+    "wrangler": "^3.101.0"
+  }
+}

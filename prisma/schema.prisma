@@ -1,0 +1,86 @@
+// ContextRelay Cloud — Prisma schema
+// Multi-tenant SaaS: hashed API-key auth + per-operation usage metering
+// for billing. Plaintext keys are NEVER persisted; only the SHA-256 hash
+// and a short display prefix are stored.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- User ----------------------------------------------------------
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  apiKeys   ApiKey[]
+  usageLogs UsageLog[]
+
+  @@index([email])
+}
+
+// ---------- ApiKey --------------------------------------------------------
+//
+// Auth flow: client sends plaintext key "ch_live_<32 url-safe bytes>" in the
+// Authorization header. The API server SHA-256 hashes it and looks up by
+// `keyHash`. The plaintext is shown ONCE at creation time and is otherwise
+// unrecoverable. `keyPrefix` is safe to display in dashboards (first ~12
+// chars) so the user can identify which key is which.
+
+model ApiKey {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  keyHash   String    @unique   // SHA-256 hex digest of the plaintext key
+  keyPrefix String               // e.g., "ch_live_a3f9" — dashboard-safe
+  name      String                // user-assigned label (e.g., "prod-ci")
+
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?            // soft-delete; revoked keys fail auth but
+                                   // their UsageLog rows are retained
+
+  usageLogs UsageLog[]
+
+  @@index([userId, revokedAt])    // fast "list my active keys"
+  @@index([keyHash])              // auth lookup (already unique, index is
+                                   // redundant on most DBs but explicit here)
+}
+
+// ---------- UsageLog ------------------------------------------------------
+//
+// One row per billable API call. Denormalises userId so monthly billing
+// roll-ups don't need to join through ApiKey. `bytesTransferred` is the
+// request body size for PUSH and the stored KV value size for PULL/PEEK
+// — we bill on egress too.
+
+enum Operation {
+  PUSH
+  PULL
+  PEEK
+  SUBSCRIBE
+}
+
+model UsageLog {
+  id               BigInt    @id @default(autoincrement())
+  apiKeyId         String
+  apiKey           ApiKey    @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  operation        Operation
+  bytesTransferred Int       // request-body size (PUSH) or KV value size (PULL/PEEK); 0 for SUBSCRIBE
+  timestamp        DateTime  @default(now())
+
+  @@index([userId, timestamp])             // "all usage for user X this month"
+  @@index([apiKeyId, timestamp])           // "per-key usage breakdown"
+  @@index([userId, operation, timestamp])  // "PUSH-count per user per day"
+}
