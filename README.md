@@ -235,6 +235,80 @@ Peeks cost almost nothing (~89ms, no payload download). Pull only when the agent
 
 ---
 
+### 5 — Claude plans, Mistral builds (fully autonomous)
+
+Use Claude Opus as your architect (high reasoning, worth the cost) and Mistral as your engineer (fast, accurate, cheaper per token). They never share a conversation — ContextRelay channels connect them without any human handoff.
+
+Start the Mistral engineer in one terminal. It subscribes to `task-assigned` and waits:
+
+```python
+# mistral_engineer.py — start this first
+import os
+from mistralai import Mistral
+from contextrelay import ContextRelay
+
+relay   = ContextRelay(api_key=os.environ["CONTEXTRELAY_API_KEY"])
+mistral = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+
+def on_task(url: str):
+    architecture = relay.pull(url)
+    code = mistral.chat.complete(
+        model="mistral-large-latest",
+        messages=[{
+            "role": "user",
+            "content": (
+                "You are a senior engineer. Implement this architecture as "
+                "complete, runnable code. Every file. No placeholders.\n\n"
+                + architecture
+            ),
+        }],
+    ).choices[0].message.content
+    relay.push(code, channel="task-done", metadata={"role": "implementation"})
+    print("Implementation published → task-done")
+
+relay.subscribe("task-assigned", on_task)  # blocks, waits for Claude
+```
+
+Then run the Python automation that drives the full loop:
+
+```python
+import os, anthropic
+from mistralai import Mistral
+from contextrelay import ContextRelay
+
+relay   = ContextRelay(api_key=os.environ["CONTEXTRELAY_API_KEY"])
+claude  = anthropic.Anthropic()
+
+# ── Claude Opus: architect ───────────────────────────────────────────
+arch = claude.messages.create(
+    model="claude-opus-4-5",
+    max_tokens=8192,
+    messages=[{
+        "role": "user",
+        "content": (
+            "Design a production FastAPI task management API. Include data models, "
+            "all endpoints, JWT auth, SQLAlchemy setup, and file structure. "
+            "Be complete — an engineer will implement directly from this document."
+        )
+    }],
+).content[0].text
+
+# Push to task-assigned — Mistral's subscriber fires in ~20 ms
+arch_url = relay.push(arch, channel="task-assigned", metadata={"role": "architecture"})
+print(f"Architecture pushed: {arch_url}")
+
+# Subscribe to task-done to receive the implementation
+def on_done(url):
+    impl = relay.pull(url)
+    print(f"Implementation received: {len(impl):,} chars")
+
+relay.subscribe("task-done", on_done)
+```
+
+**What just happened:** Claude never saw Mistral's output. Mistral never saw Claude's conversation. They exchanged one URL (~20 tokens). The subscriber fires within ~20 ms of the push — no polling, no human handoff, no copy-paste.
+
+---
+
 ## More Features
 
 ### End-to-end encryption
@@ -266,6 +340,18 @@ plaintext = relay.pull(url)  # decrypted locally
 
 Claude gains three tools: `push_context`, `peek_context`, `pull_context`.
 
+### SDK reference
+
+| Method | What it does |
+|--------|-------------|
+| `push(data, channel=None, encrypted=False, metadata=None)` | Upload payload (str, up to 25 MB), returns URL |
+| `pull(url)` | Download payload. Auto-decrypts if URL contains `#key=` |
+| `peek(url)` | Fetch metadata only — no payload download (~89 ms) |
+| `subscribe(channel, fn)` | Subscribe to a channel. Calls `fn(url)` on each push. Blocking — run in a thread |
+| `publish(channel, msg)` | Publish a signal message to a channel without storing a payload |
+
+`publish()` is useful for coordinating agents without sending data — for example, broadcasting a "pipeline complete" signal to all subscribers on a channel.
+
 ### Framework integrations
 
 ```bash
@@ -283,8 +369,18 @@ pip install contextrelay[autogen]     # get_autogen_tools()
 | Setup | Sign up, get API key, done | `wrangler deploy` on your CF account |
 | API key required | Yes | Optional |
 | Data ownership | Cloudflare edge (shared worker) | Your own CF account |
-| Cost | Free tier: 1K pushes/month | Free CF Workers tier |
+| Cost | Free / Pro / Team tiers | Free CF Workers tier |
 | URL | `contextrelay.hashim-cmd.workers.dev` | Your `*.workers.dev` subdomain |
+
+### Pricing
+
+| Plan | Price | Pushes / mo | Pulls / mo | API keys | Max payload | TTL |
+|------|-------|-------------|------------|----------|-------------|-----|
+| Free | $0 | 1,000 | 10,000 | 2 | 25 MB | 24 hr |
+| Pro | $29/mo | 100,000 | 1,000,000 | 10 | 25 MB | 24 hr |
+| Team | $99/mo | 1,000,000 | 10,000,000 | 100 | 25 MB | 24 hr |
+
+WebSocket pub/sub and client-side E2EE are included on all plans. Pushes over the monthly limit return a 402 — pulls are never blocked.
 
 **Managed cloud:** [contextrelay-cloud.vercel.app](https://contextrelay-cloud.vercel.app)
 
