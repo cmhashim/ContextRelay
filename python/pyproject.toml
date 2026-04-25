@@ -51,9 +51,9 @@ contextrelay-mcp    = "contextrelay.mcp:main"
 contextrelay-bridge = "contextrelay.bridge_cli:main"
 
 [project.urls]
-Homepage = "https://github.com/cmhashim/contextrelay"
-Repository = "https://github.com/cmhashim/contextrelay"
-Issues = "https://github.com/cmhashim/contextrelay/issues"
+Homepage = "https://github.com/cmhashim/ContextRelay"
+Repository = "https://github.com/cmhashim/ContextRelay"
+Issues = "https://github.com/cmhashim/ContextRelay/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["contextrelay"]
