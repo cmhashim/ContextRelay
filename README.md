@@ -1,6 +1,6 @@
-# ContextRelay 🔗 The Zero-Friction S3 for Agentic Memory
+# ContextRelay 🔗 Zero-Friction Shared Memory for Multi-Agent AI
 
-[![PyPI version](https://img.shields.io/pypi/v/contextrelay-mcp?color=blue&label=PyPI)](https://pypi.org/project/contextrelay-mcp/)
+[![PyPI version](https://img.shields.io/pypi/v/contextrelay?color=blue&label=PyPI)](https://pypi.org/project/contextrelay/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/)
 
@@ -24,7 +24,7 @@ At scale — hundreds of agents, thousands of handoffs per day — **you are pay
 
 ---
 
-## The Solution: Token Cost Arbitrage
+## The Solution
 
 ContextRelay replaces token-expensive data blobs with **sub-100ms URL pointers**.
 
@@ -43,43 +43,23 @@ ContextRelay runs on **Cloudflare Workers** — globally distributed V8 isolates
 
 ---
 
-## Quickstart — MCP Users (Claude Desktop, Cursor)
-
-Install the server:
+## Install
 
 ```bash
-pip install contextrelay-mcp
+pip install contextrelay
 ```
 
-Add to your `claude_desktop_config.json`:
+With optional framework integrations:
 
-```json
-{
-  "mcpServers": {
-    "contextrelay": {
-      "command": "contextrelay-mcp",
-      "env": {
-        "CONTEXTRELAY_URL": "https://contextrelay.your-account.workers.dev"
-      }
-    }
-  }
-}
+```bash
+pip install contextrelay[langchain]   # LangChain retriever + callback handler
+pip install contextrelay[crewai]      # CrewAI push/pull tools
+pip install contextrelay[autogen]     # AutoGen function tools
 ```
-
-Restart Claude Desktop. You now have two native tools:
-
-- **`push_context`** — offload any large payload, get back a URL
-- **`pull_context`** — retrieve any payload from a `workers.dev/pull/` URL
-
-Claude will call these automatically when handling large context handoffs.
 
 ---
 
 ## Quickstart — Python SDK
-
-```bash
-pip install contextrelay-mcp
-```
 
 ```python
 from contextrelay import ContextRelay
@@ -98,27 +78,57 @@ Five lines. No infrastructure. No token waste.
 
 ---
 
+## Quickstart — MCP (Claude Desktop, Cursor)
+
+```bash
+pip install contextrelay
+```
+
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "contextrelay": {
+      "command": "contextrelay-mcp",
+      "env": {
+        "CONTEXTRELAY_URL": "https://contextrelay.your-account.workers.dev"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop. You now have three native tools:
+
+- **`push_context`** — offload any large payload, get back a URL
+- **`peek_context`** — read only the metadata header before deciding to pull
+- **`pull_context`** — retrieve any payload from a `workers.dev/pull/` URL
+
+---
+
 ## Self-Hosting the Edge API
 
 ContextRelay is fully self-hostable. You own your data.
 
-- **Clone & deploy in 3 commands:**
-  ```bash
-  git clone https://github.com/cmhashim/contextrelay
-  cd contextrelay/api && npm install
-  wrangler deploy
-  ```
+```bash
+git clone https://github.com/cmhashim/ContextRelay
+cd ContextRelay/api && npm install
+```
 
-- **Create your KV namespace** (Cloudflare stores the payloads):
-  ```bash
-  wrangler kv namespace create CONTEXT_KV
-  # Copy the returned ID into wrangler.toml
-  ```
+Create your KV namespace (Cloudflare stores the payloads):
 
-- **Set your worker URL** in the SDK or MCP server:
-  ```bash
-  export CONTEXTRELAY_URL="https://contextrelay.your-account.workers.dev"
-  ```
+```bash
+wrangler kv namespace create CONTEXT_KV
+# Copy the returned ID into wrangler.toml
+```
+
+Deploy:
+
+```bash
+wrangler deploy
+export CONTEXTRELAY_URL="https://contextrelay.your-account.workers.dev"
+```
 
 Free Cloudflare tier covers 100,000 Worker requests/day and 1GB KV storage.
 
@@ -152,16 +162,13 @@ Your Agent  ──→  passes URL to next agent (80 chars, ~0 tokens)
 |-----------|---------|---------|
 | push | 125 KB | ~250ms |
 | pull | 125 KB | **~75ms** |
-| pull | 220 KB | ~100ms |
+| peek (metadata only) | any | ~89ms |
 
 ---
 
-## Pub/Sub Signaling (no polling)
+## Pub/Sub Signaling
 
-Multi-agent orchestration usually means Agent B polling, or your framework
-wiring up a callback by hand. ContextRelay ships a WebSocket signaling layer
-so Agent B can *subscribe to a channel* and get the pointer URL the
-millisecond Agent A pushes it.
+Multi-agent orchestration usually means polling or manual callbacks. ContextRelay ships a WebSocket signaling layer so Agent B can subscribe to a channel and get the pointer URL the millisecond Agent A pushes it.
 
 ```python
 from contextrelay import ContextRelay
@@ -169,97 +176,102 @@ import threading
 
 hub = ContextRelay("https://contextrelay.your-account.workers.dev")
 
-# --- Agent B, in a background thread ---
+# Agent B — subscribe in a background thread
 def on_context_ready(url):
     payload = hub.pull(url)
-    print(f"Agent B got {len(payload)} chars: {payload[:80]}...")
+    print(f"Agent B got {len(payload)} chars")
 
 threading.Thread(
     target=hub.subscribe, args=("project_x", on_context_ready), daemon=True
 ).start()
 
-# --- Agent A, some time later ---
+# Agent A — push triggers Agent B's callback within ~20ms
 hub.push(huge_spec, channel="project_x")
-# Agent B's callback fires within ~20 ms of the push returning.
 ```
 
-**Under the hood:** each channel is a Cloudflare Durable Object using
-Hibernatable WebSockets. Idle channels pay zero CPU/memory; fan-out is
-in-memory on the same DO instance. The Python SDK auto-reconnects with
-exponential backoff and 30-second ping keepalive — drops are transparent.
+Each channel is a Cloudflare Durable Object using Hibernatable WebSockets — idle channels pay zero CPU/memory. The SDK auto-reconnects with exponential backoff and 30-second keepalive.
 
 ---
 
-## Metadata & Peek (decide before you download)
+## Metadata & Peek
 
-Before pulling a 200 KB payload into a context window, an agent should
-be able to *peek* at what it is. ContextRelay lets the producer attach a
-small plaintext metadata header on push, and any agent can read it with
-one lightweight call:
+Decide before you download. Attach a metadata header on push; any agent can read it with a single lightweight call — no payload download needed.
 
 ```python
 url = hub.push(
     big_payload,
-    metadata={"summary": "Database schema for orders service",
-              "size_kb": 80, "type": "sql"},
+    metadata={"summary": "Database schema for orders service", "size_kb": 80},
 )
 
-# Agent B, on receiving url:
-hub.peek(url)
-# → {"summary": "Database schema for orders service", "size_kb": 80, "type": "sql"}
+# Agent B peeks before committing tokens to a full pull
+meta = hub.peek(url)
+# → {"summary": "Database schema for orders service", "size_kb": 80}
 
-# Agent decides to pull only if it matches the task.
-hub.pull(url)
+data = hub.pull(url)  # only if relevant
 ```
 
-**Route:** `GET /peek/:id` — returns only the metadata object (not the
-payload). Server-side JSON parse means the heavy `data` field never
-touches the wire. Works even when the payload is encrypted — metadata
-stays plaintext by design, so peek needs no key.
-
-The MCP server exposes `peek_context(url)` with guidance to LLM clients
-to call it **first** on any ContextRelay URL, so agents stop burning
-tokens on pulls they didn't need.
+Metadata is always plaintext — `peek` works even when the payload is encrypted.
 
 ---
 
 ## End-to-End Encryption (opt-in)
 
-Passing secrets through a third-party edge — API keys, PII, proprietary
-code — means trusting that edge. ContextRelay's opt-in E2EE removes the
-trust assumption. Encryption runs **entirely client-side**; Cloudflare
-sees only ciphertext.
+Encryption runs **entirely client-side**. Cloudflare sees only ciphertext.
 
 ```python
-hub = ContextRelay("https://contextrelay.your-account.workers.dev")
-
 url = hub.push(secret_payload, encrypted=True)
 # url → https://.../pull/<uuid>#key=<fernet_key>
 
-plaintext = hub.pull(url)   # → decrypted locally
+plaintext = hub.pull(url)  # decrypted locally — key never leaves your machine
 ```
 
-**How the key stays private:**
-
-Per RFC 3986, URL fragments (everything after `#`) are never transmitted
-to the server by HTTP clients. So when the SDK calls `GET /pull/<uuid>`,
-the `#key=...` portion is stripped locally and never leaves your machine.
-The Worker stores — and only ever sees — opaque Fernet ciphertext
-(`gAAAAA...`).
+Per RFC 3986, URL fragments (`#key=...`) are never transmitted to the server. The Worker stores — and only ever sees — opaque Fernet ciphertext.
 
 - **Cipher:** Fernet (AES-128-CBC + HMAC-SHA256)
-- **Key:** fresh 256-bit URL-safe base64 key per upload
-- **Errors:** a wrong/missing key raises `ValueError("Failed to decrypt: Invalid or missing key")` — never a partial or corrupt payload
+- **Key:** fresh 256-bit key per upload, embedded in the URL fragment
+
+---
+
+## Framework Integrations
+
+### LangChain
+
+```python
+from contextrelay.integrations import ContextRelayRetriever, ContextRelayCallbackHandler
+
+retriever = ContextRelayRetriever(hub_url="https://...", channel="agent-results")
+handler = ContextRelayCallbackHandler(hub=hub, channel="llm-outputs")
+```
+
+### CrewAI
+
+```python
+from contextrelay.integrations import ContextRelayPushTool, ContextRelayPullTool
+
+tools = [ContextRelayPushTool(hub_url="https://..."), ContextRelayPullTool(hub_url="https://...")]
+```
+
+### AutoGen
+
+```python
+from contextrelay.integrations import get_autogen_tools
+
+tools = get_autogen_tools(hub_url="https://...")
+# Returns FunctionTool instances ready for AssistantAgent
+```
 
 ---
 
 ## Roadmap
 
-- [x] Phase 1 — Core edge API + Python SDK + MCP server
-- [x] Phase 2 — WebSocket pub/sub (agents subscribe to context-ready events)
-- [x] Phase 3 — E2EE (Fernet, key in URL fragment — server never sees plaintext)
-- [x] Phase 4 — Metadata & peek (decide before you pull)
-- [ ] Phase 5 — LangChain / CrewAI / AutoGen native integrations
+- [x] Phase 1 — Core edge API (POST /push, GET /pull) + Python SDK
+- [x] Phase 2 — Cross-provider handoff (Claude → Mistral, ~0 tokens)
+- [x] Phase 3 — MCP native tools (push_context, peek_context, pull_context)
+- [x] Phase 4 — WebSocket pub/sub via Durable Objects (21ms fan-out)
+- [x] Phase 5 — E2EE vault (Fernet, key in URL fragment)
+- [x] Phase 6 — Metadata envelope + peek() lazy loading
+- [x] Phase 7 — LangChain, CrewAI, AutoGen integrations
+- [ ] Phase 8 — Safety scanners (Llama-Guard 3 for public deployments)
 
 ---
 
