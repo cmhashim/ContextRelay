@@ -7,6 +7,20 @@ binding = "CONTEXT_KV"
 id = "YOUR_KV_NAMESPACE_ID"
 preview_id = "YOUR_KV_PREVIEW_NAMESPACE_ID"
 
+# API key validation store.
+# Create with: wrangler kv namespace create "contextrelay-api-keys"
+# Then paste the returned id and preview_id below.
+[[kv_namespaces]]
+binding = "API_KEYS_KV"
+id = "YOUR_API_KEYS_KV_NAMESPACE_ID"
+preview_id = "YOUR_API_KEYS_KV_PREVIEW_NAMESPACE_ID"
+
+[vars]
+CLOUD_URL = "https://contextrelay-cloud.vercel.app"
+
+# INTERNAL_SECRET is a secret — never put it in plain vars.
+# Set it with: wrangler secret put INTERNAL_SECRET
+
 [[durable_objects.bindings]]
 name = "CHANNEL_BROKER"
 class_name = "ChannelBroker"

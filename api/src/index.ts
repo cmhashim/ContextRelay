@@ -1,20 +1,70 @@
 export interface Env {
   CONTEXT_KV: KVNamespace;
+  /** API_KEYS_KV is optional — when present, authentication is enforced.
+   *  Self-hosted deployments without this binding run in open mode. */
+  API_KEYS_KV: KVNamespace | undefined;
   CHANNEL_BROKER: DurableObjectNamespace;
+  /** Cloud dashboard base URL for async usage reporting. */
+  CLOUD_URL: string | undefined;
+  /** Shared secret for worker→cloud internal calls. Set via `wrangler secret put INTERNAL_SECRET`. */
+  INTERNAL_SECRET: string | undefined;
+}
+
+interface KeyEntry {
+  keyId: string;
+  userId: string;
+  plan: string;
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function authenticate(request: Request, env: Env): Promise<KeyEntry | null> {
+  const auth = request.headers.get('Authorization') ?? '';
+  if (!auth.startsWith('Bearer ')) return null;
+  const token = auth.slice(7).trim();
+  if (!token) return null;
+
+  const hash = await sha256Hex(token);
+  const raw = await env.API_KEYS_KV!.get(`keyhash:${hash}`);
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw) as KeyEntry;
+  } catch {
+    return null;
+  }
+}
+
+function reportUsage(
+  env: Env,
+  keyId: string,
+  operation: 'PUSH' | 'PULL' | 'PEEK' | 'SUBSCRIBE',
+  bytes: number,
+): Promise<void> {
+  if (!env.CLOUD_URL || !env.INTERNAL_SECRET) return Promise.resolve();
+  return fetch(`${env.CLOUD_URL}/api/internal/usage`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-internal-secret': env.INTERNAL_SECRET,
+    },
+    body: JSON.stringify({ keyId, operation, bytes }),
+  })
+    .then(() => undefined)
+    .catch(() => undefined); // Best-effort — never fail the main request.
 }
 
 /**
  * Storage format (Phase 5+):
- *   KV value = JSON.stringify({
- *     data:     string,         // plaintext or Fernet ciphertext
- *     metadata: object,         // always plaintext; may be {}
- *   })
+ *   KV value = JSON.stringify({ data: string, metadata: object })
  *
  * Legacy format (pre-Phase-5):
  *   KV value = <raw payload string>
- *
- * Peek handles both; Pull returns the stored value as-is and the SDK
- * unwraps client-side (also handling both formats).
  */
 
 export class ChannelBroker {
@@ -67,7 +117,25 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // POST /push — store {data, metadata}; optionally fan-out to a channel.
+    // Health check — always open.
+    if (url.pathname === '/' || url.pathname === '') {
+      return new Response('ContextRelay API is running.', { status: 200 });
+    }
+
+    // Auth gate — only enforced when API_KEYS_KV is bound.
+    // Deployments without the binding run in open/self-hosted mode.
+    let keyEntry: KeyEntry | null = null;
+    if (env.API_KEYS_KV) {
+      keyEntry = await authenticate(request, env);
+      if (!keyEntry) {
+        return new Response(
+          JSON.stringify({ error: 'Missing or invalid API key' }),
+          { status: 401, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+    }
+
+    // POST /push
     if (request.method === 'POST' && url.pathname === '/push') {
       const contentType = request.headers.get('Content-Type') || '';
       let dataField: string;
@@ -114,9 +182,13 @@ export default {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ url: pointerUrl }),
-            })
-          )
+            }),
+          ),
         );
+      }
+
+      if (keyEntry) {
+        ctx.waitUntil(reportUsage(env, keyEntry.keyId, 'PUSH', dataField.length));
       }
 
       return new Response(JSON.stringify({ url: pointerUrl, id, channel: channel ?? null }), {
@@ -124,23 +196,26 @@ export default {
       });
     }
 
-    // GET /pull/:id — return KV value as-is (new JSON wrapper or legacy raw).
-    // The SDK is responsible for unwrapping.
+    // GET /pull/:id
     if (request.method === 'GET' && url.pathname.startsWith('/pull/')) {
       const id = url.pathname.split('/')[2];
       const text = await env.CONTEXT_KV.get(id);
       if (!text) return new Response('Context not found or expired', { status: 404 });
+
+      if (keyEntry) {
+        ctx.waitUntil(reportUsage(env, keyEntry.keyId, 'PULL', text.length));
+      }
+
       return new Response(text, { headers: { 'Content-Type': 'text/plain' } });
     }
 
-    // GET /peek/:id — return only the metadata object (server-side unwrap).
-    // Legacy raw entries return {}.
+    // GET /peek/:id
     if (request.method === 'GET' && url.pathname.startsWith('/peek/')) {
       const id = url.pathname.split('/')[2];
       const text = await env.CONTEXT_KV.get(id);
       if (!text) return new Response('Context not found or expired', { status: 404 });
 
-      let metadata: Record<string, unknown> = {};
+      let meta: Record<string, unknown> = {};
       try {
         const parsed = JSON.parse(text);
         if (
@@ -151,17 +226,22 @@ export default {
           typeof parsed.metadata === 'object' &&
           !Array.isArray(parsed.metadata)
         ) {
-          metadata = parsed.metadata as Record<string, unknown>;
+          meta = parsed.metadata as Record<string, unknown>;
         }
       } catch {
         // Legacy raw entry — no metadata.
       }
-      return new Response(JSON.stringify(metadata), {
+
+      if (keyEntry) {
+        ctx.waitUntil(reportUsage(env, keyEntry.keyId, 'PEEK', 0));
+      }
+
+      return new Response(JSON.stringify(meta), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    // GET /ws/:channel — upgrade and hand off to the channel's DO.
+    // GET /ws/:channel
     if (request.method === 'GET' && url.pathname.startsWith('/ws/')) {
       if (request.headers.get('Upgrade') !== 'websocket') {
         return new Response('Expected WebSocket upgrade', { status: 426 });
@@ -172,6 +252,6 @@ export default {
       return stub.fetch(request);
     }
 
-    return new Response('ContextRelay API is running.', { status: 200 });
+    return new Response('Not found', { status: 404 });
   },
 };
