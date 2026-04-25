@@ -1,12 +1,23 @@
-# ContextRelay — Shared Memory for Multi-Agent AI
+# ContextRelay — Shared Memory and Channels for Multi-Agent AI
 
 [![PyPI version](https://img.shields.io/pypi/v/contextrelay?color=blue&label=PyPI)](https://pypi.org/project/contextrelay/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/)
 
-> Pass a URL. Not a token wall.
+ContextRelay stores large payloads at the Cloudflare edge and returns a short URL pointer, so agents on different LLM providers can hand off context without pasting it through prompts. Pub/sub channels coordinate them in ~20 ms. End-to-end encryption is opt-in per push, with the key kept in the URL fragment so it never reaches the server.
 
-ContextRelay stores large AI context payloads at the Cloudflare edge and returns a short URL pointer. Agents hand off the pointer — not the data — so you stop paying token tax on data transit.
+**Two ways to run it:**
+
+| | Self-host (open source) | Managed cloud |
+|---|---|---|
+| **License** | MIT | MIT (same code) |
+| **Where it runs** | Your Cloudflare account | Our managed Worker |
+| **Setup** | `wrangler deploy` | `pip install contextrelay` + API key |
+| **Auth / quota** | None — open mode | API keys, monthly quotas |
+| **Cost** | Cloudflare's free tier covers ~100K req/day | Free / $29 / $99 plans |
+| **Best for** | You want full ownership and zero vendor lock-in | You want zero ops, a dashboard, and metered billing |
+
+Same SDK either way — point it at your Worker URL or at the managed cloud. Everything in this README works on both.
 
 ---
 
@@ -14,7 +25,7 @@ ContextRelay stores large AI context payloads at the Cloudflare edge and returns
 
 Multi-agent pipelines burn most of their token budget passing data around, not thinking.
 
-When Agent A (Claude) finishes a 50,000-token architecture document and needs to hand it to Agent B (Mistral), you have two options — and both are terrible:
+When Agent A (Claude) finishes a 50,000-token architecture document and needs to hand it to Agent B (Mistral), you have two bad options:
 
 | Option | Cost |
 |--------|------|
@@ -27,7 +38,7 @@ At 1,000 handoffs/day that is $150/day in pure overhead — no thinking, just mo
 
 ## The Solution
 
-ContextRelay replaces the blob with an 80-character URL pointer.
+ContextRelay replaces the blob with an 80-character URL pointer, and adds a channel layer for async coordination.
 
 ```
 Without ContextRelay          With ContextRelay
@@ -37,6 +48,21 @@ Agent A → [50 KB JSON]        Agent A → push() → "https://.../pull/uuid"
         Agent B               Agent B → pull(url) → [50 KB JSON]
         (50 K tokens burned)            (73 ms, ~0 tokens)
 ```
+
+For coordination across more than two agents, push to a named channel and have other agents `subscribe()` — they receive the pointer URL over WebSocket within ~20 ms.
+
+---
+
+## What ContextRelay is *not*
+
+Honest scope, so you can decide if it fits your problem:
+
+- **Not a vector store.** No embeddings, no semantic search. If you need persistent recall over user history, use [Mem0](https://mem0.ai) or [Letta](https://letta.com).
+- **Not a long-term memory layer.** Default TTL is 24 hours. If you need durable agent memory, use Letta/MemGPT.
+- **Not a general message broker.** No durable queues, no exactly-once delivery. If you need that, use Redis or SQS.
+- **Not a workflow engine.** No DAGs, no retries, no orchestration. If you need that, use Temporal or Inngest.
+
+ContextRelay's sweet spot is the moment you have two agents on different providers, a 50 KB payload, and want it to cost ~20 tokens — with optional encryption and channel coordination on top.
 
 ---
 
@@ -384,13 +410,49 @@ WebSocket pub/sub and client-side E2EE are included on all plans. Pushes over th
 
 **Managed cloud:** [contextrelay-cloud.vercel.app](https://contextrelay-cloud.vercel.app)
 
-**Self-host:**
+<a id="self-hosting"></a>
+
+### Self-hosting
+
+ContextRelay runs entirely on Cloudflare Workers. The free Cloudflare tier (100K Worker requests/day, 1 GB of KV storage) is enough for most personal and small-team workloads.
+
+**1. Clone and install**
+
 ```bash
 git clone https://github.com/cmhashim/ContextRelay
-cd ContextRelay/api && npm install
-wrangler kv namespace create CONTEXT_KV   # copy ID → wrangler.toml
+cd ContextRelay/api
+npm install
+```
+
+**2. Create the KV namespace and a Durable Object binding**
+
+```bash
+wrangler kv namespace create CONTEXT_KV
+# copy the id printed → paste into wrangler.toml as `kv_namespaces`
+```
+
+The `wrangler.toml` already declares the `ChannelBroker` Durable Object — Cloudflare provisions it on first deploy.
+
+**3. Deploy**
+
+```bash
 wrangler deploy
 ```
+
+You'll get a URL like `https://contextrelay.<your-account>.workers.dev`. Point the SDK at it:
+
+```python
+relay = ContextRelay(base_url="https://contextrelay.<your-account>.workers.dev")
+```
+
+**No API key needed in self-host mode.** The Worker only enforces auth when the optional `API_KEYS_KV` binding is present (used by the managed cloud).
+
+**Operating notes:**
+
+- All four routes (`POST /push`, `GET /pull/:id`, `GET /peek/:id`, `GET /ws/:channel`) work the same as the managed cloud.
+- Payloads are stored in KV with a 24-hour TTL, capped at 25 MB.
+- WebSocket pub/sub uses Hibernatable Durable Objects, so idle channels cost nothing.
+- The MCP server (`pip install contextrelay && contextrelay-mcp`) accepts `CONTEXTRELAY_URL=https://your-worker-url` to talk to your self-hosted instance.
 
 ---
 
