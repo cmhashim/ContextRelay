@@ -9,19 +9,32 @@ from typing import Any, Callable, Dict, Optional
 import requests
 
 
+MANAGED_URL = "https://contextrelay.hashim-cmd.workers.dev"
+
+
 class ContextRelay:
     """
     Minimal client for the ContextRelay edge API.
 
     Args:
-        base_url: Base URL of your Cloudflare Worker, e.g.
-                  "https://contextrelay.your-account.workers.dev"
+        base_url: Base URL of the Cloudflare Worker.
+                  Defaults to the managed cloud instance.
+        api_key:  API key for the managed cloud (cr_live_...).
+                  Omit only for self-hosted open deployments.
         timeout:  HTTP timeout in seconds (default: 30).
     """
 
-    def __init__(self, base_url: str, timeout: int = 30):
+    def __init__(
+        self,
+        base_url: str = MANAGED_URL,
+        api_key: Optional[str] = None,
+        timeout: int = 30,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._headers: Dict[str, str] = {}
+        if api_key:
+            self._headers["Authorization"] = f"Bearer {api_key}"
 
     def push(
         self,
@@ -80,6 +93,7 @@ class ContextRelay:
         response = requests.post(
             f"{self.base_url}/push",
             json=body,
+            headers=self._headers,
             timeout=self.timeout,
         )
         response.raise_for_status()
@@ -113,7 +127,7 @@ class ContextRelay:
             base_url = url
             key_str = None
 
-        response = requests.get(base_url, timeout=self.timeout)
+        response = requests.get(base_url, headers=self._headers, timeout=self.timeout)
         response.raise_for_status()
         raw = response.text
 
@@ -183,7 +197,7 @@ class ContextRelay:
         prefix, _, uuid = base_url.partition("/pull/")
         peek_url = f"{prefix}/peek/{uuid}"
 
-        response = requests.get(peek_url, timeout=self.timeout)
+        response = requests.get(peek_url, headers=self._headers, timeout=self.timeout)
         response.raise_for_status()
         result = response.json()
         return result if isinstance(result, dict) else {}

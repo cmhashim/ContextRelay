@@ -1,90 +1,254 @@
-# ContextRelay 🔗 Zero-Friction Shared Memory for Multi-Agent AI
+# ContextRelay — Shared Memory for Multi-Agent AI
 
 [![PyPI version](https://img.shields.io/pypi/v/contextrelay?color=blue&label=PyPI)](https://pypi.org/project/contextrelay/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/)
 
-> **Pass a URL. Not a token wall.**
-> ContextRelay stores massive AI context payloads at the Cloudflare edge and gives you back a single URL. Agents exchange the pointer — not the data.
+> Pass a URL. Not a token wall.
+
+ContextRelay stores large AI context payloads at the Cloudflare edge and returns a short URL pointer. Agents hand off the pointer — not the data — so you stop paying token tax on data transit.
 
 ---
 
 ## The Problem
 
-Multi-agent AI pipelines have a dirty secret: **they burn most of their token budget passing data around, not thinking.**
+Multi-agent pipelines burn most of their token budget passing data around, not thinking.
 
-When Agent A (Claude) finishes building a 50,000-token architecture spec and needs to hand it to Agent B (Mistral), your orchestrator has two options — and both are terrible:
+When Agent A (Claude) finishes a 50,000-token architecture document and needs to hand it to Agent B (Mistral), you have two options — and both are terrible:
 
 | Option | Cost |
 |--------|------|
-| Pass the full text in the next prompt | 50,000 tokens × $0.003/1K = **$0.15 per handoff** |
-| Truncate it | You lose context. Agent B works blind. |
+| Paste the full text into the next prompt | 50 K tokens × $0.003/1K = **$0.15 per handoff** |
+| Truncate it | Agent B works blind |
 
-At scale — hundreds of agents, thousands of handoffs per day — **you are paying a token tax on data transit, not intelligence.** This is waste, not compute.
+At 1,000 handoffs/day that is $150/day in pure overhead — no thinking, just moving bytes around.
 
 ---
 
 ## The Solution
 
-ContextRelay replaces token-expensive data blobs with **sub-100ms URL pointers**.
+ContextRelay replaces the blob with an 80-character URL pointer.
 
 ```
-Without ContextRelay:        With ContextRelay:
-─────────────────────      ──────────────────────────────────────
-Agent A → [50KB JSON]      Agent A → POST /push → [UUID url]
-           ↓                                          ↓
-        Agent B            Agent B → GET /pull/<id> → [50KB JSON]
-        (50K tokens burned)          (73ms, ~0 tokens)
+Without ContextRelay          With ContextRelay
+─────────────────────         ──────────────────────────────────
+Agent A → [50 KB JSON]        Agent A → push() → "https://.../pull/uuid"
+           ↓                                             ↓
+        Agent B               Agent B → pull(url) → [50 KB JSON]
+        (50 K tokens burned)            (73 ms, ~0 tokens)
 ```
-
-**The math:** A 50KB context payload costs ~12,500 tokens to pass directly. Via ContextRelay, the pointer URL is ~80 characters — effectively **zero tokens**. At 1,000 agent handoffs/day, that's ~$150/day saved.
-
-ContextRelay runs on **Cloudflare Workers** — globally distributed V8 isolates with sub-millisecond cold starts. Your context lives at the edge, milliseconds from wherever your agents are running.
 
 ---
 
-## Install
+## Quickstart
 
 ```bash
 pip install contextrelay
 ```
 
-With optional framework integrations:
-
-```bash
-pip install contextrelay[langchain]   # LangChain retriever + callback handler
-pip install contextrelay[crewai]      # CrewAI push/pull tools
-pip install contextrelay[autogen]     # AutoGen function tools
-```
-
----
-
-## Quickstart — Python SDK
+Get an API key at **[contextrelay-cloud.vercel.app](https://contextrelay-cloud.vercel.app)** → Dashboard → API Keys.
 
 ```python
+import os
 from contextrelay import ContextRelay
 
-hub = ContextRelay("https://contextrelay.your-account.workers.dev")
+relay = ContextRelay(api_key=os.environ["CONTEXTRELAY_API_KEY"])
 
-# Agent A: offload 50KB of context, hand off a URL
-url = hub.push(large_json_string)
-print(url)  # https://...workers.dev/pull/3f7a2b...
+# Agent A — store a large payload, hand off the URL
+url = relay.push(large_text)
 
-# Agent B: retrieve the full payload in one call
-data = hub.pull(url)
+# Agent B — retrieve the payload from the URL
+data = relay.pull(url)
 ```
 
-Five lines. No infrastructure. No token waste.
+The `base_url` defaults to the managed cloud worker. No infrastructure to run.
 
 ---
 
-## Quickstart — MCP (Claude Desktop, Cursor)
+## Real Use Cases
 
-```bash
-pip install contextrelay
+### 1 — Cross-provider code review (Claude → Mistral)
+
+Agent A (Claude) does a deep code review of a pull request. The full review is too large to fit in Mistral's context alongside the follow-up instructions. ContextRelay bridges them at near-zero cost.
+
+```python
+import os
+import anthropic
+from mistralai import Mistral
+from contextrelay import ContextRelay
+
+relay = ContextRelay(api_key=os.environ["CONTEXTRELAY_API_KEY"])
+
+# ── Agent A: Claude reviews the PR ──────────────────────────────────────────
+claude = anthropic.Anthropic()
+
+diff = open("pr_diff.txt").read()  # ~20 KB of git diff
+
+review = claude.messages.create(
+    model="claude-opus-4-5",
+    max_tokens=4096,
+    messages=[{
+        "role": "user",
+        "content": f"Do a thorough code review of this PR diff:\n\n{diff}"
+    }],
+).content[0].text
+
+# Push the full review to ContextRelay — get back a short URL
+review_url = relay.push(review, metadata={"type": "code_review", "pr": "PR-441"})
+print(f"Review stored: {review_url}")
+
+# ── Agent B: Mistral turns the review into Jira tickets ─────────────────────
+mistral = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+
+# Pull the review by URL — no token cost in the orchestrator
+full_review = relay.pull(review_url)
+
+tickets = mistral.chat.complete(
+    model="mistral-large-latest",
+    messages=[{
+        "role": "user",
+        "content": (
+            f"Convert this code review into Jira tickets, one per issue found:\n\n"
+            f"{full_review}"
+        )
+    }],
+).choices[0].message.content
+
+print(tickets)
 ```
 
-Add to your `claude_desktop_config.json`:
+**Token cost of the handoff:** the URL is ~80 chars ≈ 20 tokens. The review itself (~3,000 tokens) is fetched directly by Mistral — it never appears in Claude's conversation again.
+
+---
+
+### 2 — Research synthesis pipeline (parallel agents, one channel)
+
+Three specialist agents research different sections of a topic simultaneously. A synthesis agent subscribes to a channel and reassembles the full report the moment all three push their findings.
+
+```python
+import os, threading
+from contextrelay import ContextRelay
+
+relay = ContextRelay(api_key=os.environ["CONTEXTRELAY_API_KEY"])
+
+collected = {}
+
+def on_section_ready(url):
+    section = relay.pull(url)
+    meta = relay.peek(url)
+    collected[meta["section"]] = section
+    if len(collected) == 3:
+        full_report = "\n\n".join(
+            collected[k] for k in ["intro", "analysis", "conclusion"]
+        )
+        print("Full report assembled:", len(full_report), "chars")
+
+# Synthesis agent subscribes before any pushes arrive
+threading.Thread(
+    target=relay.subscribe,
+    args=("report-channel", on_section_ready),
+    daemon=True,
+).start()
+
+# Three researcher agents run in parallel and push to the same channel
+def researcher(section_name, prompt):
+    # ... call your LLM here ...
+    result = f"[{section_name} findings]"
+    relay.push(result, channel="report-channel", metadata={"section": section_name})
+
+threads = [
+    threading.Thread(target=researcher, args=(name, prompt))
+    for name, prompt in [
+        ("intro",       "Write an introduction to quantum computing"),
+        ("analysis",    "Analyse the current state of quantum hardware"),
+        ("conclusion",  "Summarise the 5-year outlook for quantum computing"),
+    ]
+]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+```
+
+Each agent push triggers the subscriber's callback within ~20ms. The synthesis agent never polls.
+
+---
+
+### 3 — Long-running task offload to Claude Code (AgentBridge)
+
+An orchestrator script delegates a coding task to a Claude Code instance running in a tmux window. `push_and_wait` blocks until Claude finishes and the result is relayed back — no polling, no SSH, no manual copy-paste.
+
+```python
+import os
+from contextrelay import ContextRelay, AgentBridge
+
+relay = ContextRelay(api_key=os.environ["CONTEXTRELAY_API_KEY"])
+
+# Start the coordinator in your tmux session first:
+#   python3 vibe_coordinator.py --session vibe --window 0
+
+bridge = AgentBridge(
+    relay,
+    task_channel="vibe-tasks",
+    done_channel="vibe-done",
+)
+
+result = bridge.push_and_wait(
+    "Refactor the auth module to replace Clerk with Firebase. "
+    "Update all imports, run the type checker, and return a summary of changes."
+)
+
+print(result)
+```
+
+The bridge pushes the task via ContextRelay, the coordinator pastes it into the Claude Code terminal, waits for it to finish, and pushes the output back. The orchestrator gets the full response as a string.
+
+---
+
+### 4 — Oversized context handoff within a single chain
+
+Sometimes a single chain produces output too large for the next step's context window. Use ContextRelay as a "context checkpoint" — checkpoint large intermediate results and reload only when needed.
+
+```python
+import os, json
+from contextrelay import ContextRelay
+
+relay = ContextRelay(api_key=os.environ["CONTEXTRELAY_API_KEY"])
+
+# Step 1 — generate a large data extraction result
+raw_data = run_sql_query()          # 80 KB JSON, too large for the next prompt
+checkpoint_url = relay.push(
+    json.dumps(raw_data),
+    metadata={"step": "sql_extraction", "rows": len(raw_data)},
+)
+
+# Step 2 — peek first to decide whether to proceed
+meta = relay.peek(checkpoint_url)
+print(f"Checkpoint has {meta['rows']} rows — proceeding to analysis")
+
+# Step 3 — load only when you need it, in the agent that needs it
+data = json.loads(relay.pull(checkpoint_url))
+analysis = run_analysis_agent(data)
+```
+
+Peeks cost almost nothing (~89ms, no payload download). Pull only when the agent actually needs the data.
+
+---
+
+## More Features
+
+### End-to-end encryption
+
+```python
+# Key is generated client-side and embedded in the URL fragment.
+# The server stores only ciphertext — never sees the key.
+url = relay.push(secret_payload, encrypted=True)
+# → https://.../pull/<uuid>#key=<fernet_key>
+
+plaintext = relay.pull(url)  # decrypted locally
+```
+
+### MCP (Claude Desktop / Claude Code)
 
 ```json
 {
@@ -92,186 +256,58 @@ Add to your `claude_desktop_config.json`:
     "contextrelay": {
       "command": "contextrelay-mcp",
       "env": {
-        "CONTEXTRELAY_URL": "https://contextrelay.your-account.workers.dev"
+        "CONTEXTRELAY_URL": "https://contextrelay.hashim-cmd.workers.dev",
+        "CONTEXTRELAY_API_KEY": "cr_live_..."
       }
     }
   }
 }
 ```
 
-Restart Claude Desktop. You now have three native tools:
+Claude gains three tools: `push_context`, `peek_context`, `pull_context`.
 
-- **`push_context`** — offload any large payload, get back a URL
-- **`peek_context`** — read only the metadata header before deciding to pull
-- **`pull_context`** — retrieve any payload from a `workers.dev/pull/` URL
+### Framework integrations
+
+```bash
+pip install contextrelay[langchain]   # ContextRelayRetriever, ContextRelayCallbackHandler
+pip install contextrelay[crewai]      # ContextRelayPushTool, ContextRelayPullTool
+pip install contextrelay[autogen]     # get_autogen_tools()
+```
 
 ---
 
-## Self-Hosting the Edge API
+## Managed Cloud vs Self-Hosting
 
-ContextRelay is fully self-hostable. You own your data.
+| | Managed Cloud | Self-Hosted |
+|---|---|---|
+| Setup | Sign up, get API key, done | `wrangler deploy` on your CF account |
+| API key required | Yes | Optional |
+| Data ownership | Cloudflare edge (shared worker) | Your own CF account |
+| Cost | Free tier: 1K pushes/month | Free CF Workers tier |
+| URL | `contextrelay.hashim-cmd.workers.dev` | Your `*.workers.dev` subdomain |
 
+**Managed cloud:** [contextrelay-cloud.vercel.app](https://contextrelay-cloud.vercel.app)
+
+**Self-host:**
 ```bash
 git clone https://github.com/cmhashim/ContextRelay
 cd ContextRelay/api && npm install
-```
-
-Create your KV namespace (Cloudflare stores the payloads):
-
-```bash
-wrangler kv namespace create CONTEXT_KV
-# Copy the returned ID into wrangler.toml
-```
-
-Deploy:
-
-```bash
+wrangler kv namespace create CONTEXT_KV   # copy ID → wrangler.toml
 wrangler deploy
-export CONTEXTRELAY_URL="https://contextrelay.your-account.workers.dev"
 ```
-
-Free Cloudflare tier covers 100,000 Worker requests/day and 1GB KV storage.
 
 ---
 
-## Architecture
-
-```
-Your Agent
-    │
-    │  POST /push (payload)
-    ▼
-Cloudflare Worker  ←── globally distributed, <1ms cold start
-    │
-    │  KV.put(uuid, payload, ttl=86400)
-    ▼
-Cloudflare KV  ←── edge-replicated, 24hr TTL
-    │
-    │  returns { url: "https://.../pull/<uuid>" }
-    ▼
-Your Agent  ──→  passes URL to next agent (80 chars, ~0 tokens)
-                       │
-                       │  GET /pull/<uuid>
-                       ▼
-               Cloudflare Worker → KV.get(uuid) → payload
-```
-
-**Benchmarks (live Cloudflare deployment):**
+## Benchmarks
 
 | Operation | Payload | Latency |
 |-----------|---------|---------|
-| push | 125 KB | ~250ms |
-| pull | 125 KB | **~75ms** |
-| peek (metadata only) | any | ~89ms |
+| push | 125 KB | ~250 ms |
+| pull | 125 KB | **~75 ms** |
+| peek | any | ~89 ms |
+| WebSocket fan-out | — | ~21 ms |
 
----
-
-## Pub/Sub Signaling
-
-Multi-agent orchestration usually means polling or manual callbacks. ContextRelay ships a WebSocket signaling layer so Agent B can subscribe to a channel and get the pointer URL the millisecond Agent A pushes it.
-
-```python
-from contextrelay import ContextRelay
-import threading
-
-hub = ContextRelay("https://contextrelay.your-account.workers.dev")
-
-# Agent B — subscribe in a background thread
-def on_context_ready(url):
-    payload = hub.pull(url)
-    print(f"Agent B got {len(payload)} chars")
-
-threading.Thread(
-    target=hub.subscribe, args=("project_x", on_context_ready), daemon=True
-).start()
-
-# Agent A — push triggers Agent B's callback within ~20ms
-hub.push(huge_spec, channel="project_x")
-```
-
-Each channel is a Cloudflare Durable Object using Hibernatable WebSockets — idle channels pay zero CPU/memory. The SDK auto-reconnects with exponential backoff and 30-second keepalive.
-
----
-
-## Metadata & Peek
-
-Decide before you download. Attach a metadata header on push; any agent can read it with a single lightweight call — no payload download needed.
-
-```python
-url = hub.push(
-    big_payload,
-    metadata={"summary": "Database schema for orders service", "size_kb": 80},
-)
-
-# Agent B peeks before committing tokens to a full pull
-meta = hub.peek(url)
-# → {"summary": "Database schema for orders service", "size_kb": 80}
-
-data = hub.pull(url)  # only if relevant
-```
-
-Metadata is always plaintext — `peek` works even when the payload is encrypted.
-
----
-
-## End-to-End Encryption (opt-in)
-
-Encryption runs **entirely client-side**. Cloudflare sees only ciphertext.
-
-```python
-url = hub.push(secret_payload, encrypted=True)
-# url → https://.../pull/<uuid>#key=<fernet_key>
-
-plaintext = hub.pull(url)  # decrypted locally — key never leaves your machine
-```
-
-Per RFC 3986, URL fragments (`#key=...`) are never transmitted to the server. The Worker stores — and only ever sees — opaque Fernet ciphertext.
-
-- **Cipher:** Fernet (AES-128-CBC + HMAC-SHA256)
-- **Key:** fresh 256-bit key per upload, embedded in the URL fragment
-
----
-
-## Framework Integrations
-
-### LangChain
-
-```python
-from contextrelay.integrations import ContextRelayRetriever, ContextRelayCallbackHandler
-
-retriever = ContextRelayRetriever(hub_url="https://...", channel="agent-results")
-handler = ContextRelayCallbackHandler(hub=hub, channel="llm-outputs")
-```
-
-### CrewAI
-
-```python
-from contextrelay.integrations import ContextRelayPushTool, ContextRelayPullTool
-
-tools = [ContextRelayPushTool(hub_url="https://..."), ContextRelayPullTool(hub_url="https://...")]
-```
-
-### AutoGen
-
-```python
-from contextrelay.integrations import get_autogen_tools
-
-tools = get_autogen_tools(hub_url="https://...")
-# Returns FunctionTool instances ready for AssistantAgent
-```
-
----
-
-## Roadmap
-
-- [x] Phase 1 — Core edge API (POST /push, GET /pull) + Python SDK
-- [x] Phase 2 — Cross-provider handoff (Claude → Mistral, ~0 tokens)
-- [x] Phase 3 — MCP native tools (push_context, peek_context, pull_context)
-- [x] Phase 4 — WebSocket pub/sub via Durable Objects (21ms fan-out)
-- [x] Phase 5 — E2EE vault (Fernet, key in URL fragment)
-- [x] Phase 6 — Metadata envelope + peek() lazy loading
-- [x] Phase 7 — LangChain, CrewAI, AutoGen integrations
-- [ ] Phase 8 — Safety scanners (Llama-Guard 3 for public deployments)
+All measured against the live Cloudflare deployment from a UK machine.
 
 ---
 
