@@ -16,7 +16,7 @@ id = "d3e081181e244518ae70ba6a2126ae1b"
 preview_id = "ebad9d40877a4926b6c941dab375024e"
 
 [vars]
-CLOUD_URL = "https://contextrelay-cloud.vercel.app"
+CLOUD_URL = "https://contextrelay.dev"
 
 # INTERNAL_SECRET is a secret — never put it in plain vars.
 # Set it with: wrangler secret put INTERNAL_SECRET
