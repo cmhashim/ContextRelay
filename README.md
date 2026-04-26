@@ -72,7 +72,7 @@ ContextRelay's sweet spot is the moment you have two agents on different provide
 pip install contextrelay
 ```
 
-Get an API key at **[contextrelay-cloud.vercel.app](https://contextrelay-cloud.vercel.app)** → Dashboard → API Keys.
+Get an API key at **[contextrelay.dev](https://contextrelay.dev)** → Dashboard → API Keys.
 
 ```python
 import os
@@ -356,7 +356,7 @@ plaintext = relay.pull(url)  # decrypted locally
     "contextrelay": {
       "command": "contextrelay-mcp",
       "env": {
-        "CONTEXTRELAY_URL": "https://contextrelay.hashim-cmd.workers.dev",
+        "CONTEXTRELAY_URL": "https://api.contextrelay.dev",
         "CONTEXTRELAY_API_KEY": "cr_live_..."
       }
     }
@@ -380,10 +380,45 @@ Claude gains three tools: `push_context`, `peek_context`, `pull_context`.
 
 ### Framework integrations
 
+First-class bindings for the three biggest multi-agent frameworks. Same SDK underneath — pick the one that matches your stack.
+
+**LangChain** — retriever and callback handler
+
 ```bash
-pip install contextrelay[langchain]   # ContextRelayRetriever, ContextRelayCallbackHandler
-pip install contextrelay[crewai]      # ContextRelayPushTool, ContextRelayPullTool
-pip install contextrelay[autogen]     # get_autogen_tools()
+pip install contextrelay[langchain]
+```
+```python
+from contextrelay.integrations.langchain import ContextRelayRetriever
+
+retriever = ContextRelayRetriever(api_key=API_KEY, channel="research")
+docs = retriever.get_relevant_documents("any query")  # returns Document(page_content=url)
+```
+
+**CrewAI** — push and pull as native agent tools
+
+```bash
+pip install contextrelay[crewai]
+```
+```python
+from crewai import Agent
+from contextrelay.integrations.crewai import ContextRelayPushTool, ContextRelayPullTool
+
+agent = Agent(
+    role="Researcher",
+    tools=[ContextRelayPushTool(api_key=API_KEY), ContextRelayPullTool(api_key=API_KEY)],
+)
+```
+
+**AutoGen** — function tools
+
+```bash
+pip install contextrelay[autogen]
+```
+```python
+from contextrelay.integrations.autogen import get_autogen_tools
+
+tools = get_autogen_tools(api_key=API_KEY)
+# pass into your AssistantAgent / FunctionTool list
 ```
 
 ---
@@ -396,7 +431,7 @@ pip install contextrelay[autogen]     # get_autogen_tools()
 | API key required | Yes | Optional |
 | Data ownership | Cloudflare edge (shared worker) | Your own CF account |
 | Cost | Free / Pro / Team tiers | Free CF Workers tier |
-| URL | `contextrelay.hashim-cmd.workers.dev` | Your `*.workers.dev` subdomain |
+| URL | `api.contextrelay.dev` | Your `*.workers.dev` subdomain |
 
 ### Pricing
 
@@ -408,7 +443,7 @@ pip install contextrelay[autogen]     # get_autogen_tools()
 
 WebSocket pub/sub and client-side E2EE are included on all plans. Pushes over the monthly limit return a 402 — pulls are never blocked.
 
-**Managed cloud:** [contextrelay-cloud.vercel.app](https://contextrelay-cloud.vercel.app)
+**Managed cloud:** [contextrelay.dev](https://contextrelay.dev)
 
 <a id="self-hosting"></a>
 
