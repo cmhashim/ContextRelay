@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Optional
 import requests
 
 
-MANAGED_URL = "https://contextrelay.hashim-cmd.workers.dev"
+MANAGED_URL = "https://api.contextrelay.dev/v1"
 
 
 class ContextRelay:
@@ -244,13 +244,14 @@ class ContextRelay:
                 return
             if isinstance(msg, dict) and "url" in msg:
                 try:
-                    callback(msg["url"])
+                    callback(self._rewrite_to_gateway(msg["url"]))
                 except Exception:
                     pass
 
         while True:
             ws = WebSocketApp(
                 ws_url,
+                header=self._headers or None,
                 on_open=on_open,
                 on_message=on_message,
             )
@@ -260,6 +261,32 @@ class ContextRelay:
                 break
             time.sleep(delay[0])
             delay[0] = min(delay[0] * 2, max_reconnect_delay)
+
+    def _rewrite_to_gateway(self, url: str) -> str:
+        """Rewrite an edge URL to go through the configured gateway.
+
+        When a WebSocket message arrives from the edge, it carries the edge's
+        own workers.dev URL. If this client is pointed at a gateway (e.g.
+        api.contextrelay.dev/v1), rewrite the URL so pull() goes through the
+        gateway too — keeping all traffic metered and the workers.dev URL
+        unexposed to callers.
+        """
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(url)
+        our = urlparse(self.base_url)
+
+        # Already going through our host — nothing to rewrite.
+        if parsed.netloc == our.netloc:
+            return url
+
+        # Edge URL has a different host. Rebuild using our host + path prefix.
+        # e.g. base_url = "https://api.contextrelay.dev/v1"
+        #      edge url  = "https://workers.dev/pull/{id}"
+        #      result    = "https://api.contextrelay.dev/v1/pull/{id}"
+        base_path = our.path.rstrip("/")   # "/v1"
+        new_path = base_path + parsed.path  # "/v1/pull/{id}"
+        return urlunparse((our.scheme, our.netloc, new_path, "", "", ""))
 
     def _ws_url(self, channel: str) -> str:
         if self.base_url.startswith("https://"):

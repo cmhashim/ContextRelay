@@ -58,7 +58,4 @@ Issues = "https://github.com/cmhashim/ContextRelay/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["contextrelay"]
 
-[tool.hatch.build.targets.wheel.exclude]
-"__pycache__" = "*"
-"*.pyc" = "*"
-"test*" = "*"
+exclude = ["__pycache__", "*.pyc", "test*"]

@@ -43,6 +43,39 @@ from .client import ContextRelay
 DEFAULT_TASK_CHANNEL = "agent-tasks"
 DEFAULT_DONE_CHANNEL = "agent-done"
 
+# Markers the agent is instructed to wrap its outcome summary in.
+# The coordinator extracts only this block before pushing to done_channel,
+# keeping Claude's returned context lean instead of sending the full terminal.
+OUTCOME_START = "=== CC_OUTCOME_START ==="
+OUTCOME_END = "=== CC_OUTCOME_END ==="
+
+OUTCOME_INSTRUCTION = f"""
+
+---
+After completing the task above, end your response with this exact block:
+
+{OUTCOME_START}
+COMPLETED: <bullet list of what was done>
+NOT_DONE: <anything skipped, blocked, or errored — or "none">
+NOTES: <anything the orchestrating agent should know>
+{OUTCOME_END}
+"""
+
+
+def _extract_outcome(raw: str) -> str:
+    """Return text between CC_OUTCOME markers, or full raw output as fallback.
+
+    Uses rfind() for the start marker so we always grab Vibe's response,
+    not the echoed instruction text (which also contains the markers).
+    """
+    start = raw.rfind(OUTCOME_START)  # last occurrence = model output, not input echo
+    if start == -1:
+        return raw
+    end = raw.find(OUTCOME_END, start)
+    if end == -1:
+        return raw
+    return raw[start: end + len(OUTCOME_END)].strip()
+
 
 # ---------------------------------------------------------------------------
 # TmuxDispatcher — sends a task to a tmux pane and waits for the agent to idle
@@ -233,12 +266,19 @@ class AgentBridge:
             print(f"[AgentBridge] failed to pull task: {e}", flush=True)
             return
 
+        task_with_instruction = task_text + OUTCOME_INSTRUCTION
         print(
-            f"[AgentBridge] dispatching ({len(task_text)} chars) to agent",
+            f"[AgentBridge] dispatching ({len(task_with_instruction)} chars) to agent",
             flush=True,
         )
         try:
-            result = self._dispatcher(task_text)
+            raw = self._dispatcher(task_with_instruction)
+            result = _extract_outcome(raw)
+            print(
+                f"[AgentBridge] outcome extracted ({len(result)} chars, "
+                f"{'marker found' if OUTCOME_START in raw else 'fallback: full output'})",
+                flush=True,
+            )
         except Exception as e:
             result = f"[AgentBridge] dispatcher error: {e}"
 
@@ -246,7 +286,7 @@ class AgentBridge:
             result_url = self.hub.push(
                 result,
                 channel=self.done_channel,
-                metadata={"summary": f"Result for task from {task_url[:60]}"},
+                metadata={"summary": result[:120]},
             )
             print(f"[AgentBridge] result pushed: {result_url}", flush=True)
         except Exception as e:
